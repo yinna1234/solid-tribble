@@ -1,0 +1,59 @@
+name: Fetch data & deploy Pages
+
+on:
+  schedule:
+    - cron: '0 1 * * *' # 每天 UTC 1:00(北京时间 9:00)
+  workflow_dispatch: {} # 支持手动触发,兜底用
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: |
+          pip install -r scripts/requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Fetch tables
+        env:
+          BI_USER: ${{ secrets.BI_USER }}
+          BI_PASS: ${{ secrets.BI_PASS }}
+        run: python scripts/fetch_data.py
+
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add site/data/*.json
+          git diff --cached --quiet || git commit -m "data: update $(date -u +%F)"
+          git push
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

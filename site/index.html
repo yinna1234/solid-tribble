@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>业绩数据看板</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1>业绩数据看板</h1>
+      <div class="meta">
+        <span id="updated-at">数据加载中…</span>
+        <span class="dot">·</span>
+        <span>数据来源:宏脉BI报表平台</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <div class="card-head">
+        <h2>门店数据</h2>
+        <span class="sub">业绩完成率(红 = 已达标 ≥100%)</span>
+      </div>
+      <div id="store-rate" class="chart tall"></div>
+      <div class="card-head">
+        <h2>门店业绩构成</h2>
+        <span class="sub">初诊 / 复诊 / 再消费</span>
+      </div>
+      <div id="store-mix" class="chart"></div>
+      <details class="raw">
+        <summary>查看门店数据明细</summary>
+        <div class="table-wrap" id="store-table"></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>咨询数据</h2>
+        <span class="sub">业绩目标 vs 实收金额</span>
+      </div>
+      <div id="consult-chart" class="chart tall"></div>
+      <details class="raw">
+        <summary>查看咨询数据明细</summary>
+        <div class="table-wrap" id="consult-table"></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>医生数据</h2>
+        <span class="sub">业绩目标 vs 医生业绩</span>
+      </div>
+      <div id="doctor-chart" class="chart tall"></div>
+      <details class="raw">
+        <summary>查看医生数据明细</summary>
+        <div class="table-wrap" id="doctor-table"></div>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="err" class="err"></span>
+  </footer>
+
+  <script src="js/charts.js"></script>
+</body>
+</html>
