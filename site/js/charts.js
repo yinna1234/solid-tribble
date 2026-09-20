@@ -105,6 +105,41 @@ function targetVsActual(id, payload, nameKey, actualKey) {
   return chart;
 }
 
+/* 网电/市场/老带新:到诊柱状 + 完成率折线(按门店) */
+function visitVsRate(id, payload) {
+  // 过滤掉无完成率的行(如小计行以外的说明行),保留"合计"排最后
+  const rows = payload.rows.filter((r) => typeof r['总完成率'] === 'number');
+  const nonTotal = rows.filter((r) => r['门店'] !== '合计');
+  const total = rows.filter((r) => r['门店'] === '合计');
+  const ordered = [...nonTotal.sort((a, b) => b['总到诊'] - a['总到诊']), ...total];
+  const chart = echarts.init(document.getElementById(id));
+  chart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { top: 0, textStyle: { color: '#555' } },
+    grid: { left: 60, right: 60, top: 36, bottom: 40 },
+    xAxis: { type: 'category', data: ordered.map((r) => r['门店']), axisLabel: { color: '#333' } },
+    yAxis: [
+      { type: 'value', name: '到诊', axisLabel: { color: PALETTE.axis }, splitLine: { lineStyle: { color: PALETTE.split } } },
+      { type: 'value', name: '完成率', axisLabel: { color: PALETTE.axis, formatter: '{value}%' }, splitLine: { show: false } },
+    ],
+    series: [
+      {
+        name: '总目标', type: 'bar', barWidth: 14, data: ordered.map((r) => r['总目标']),
+        itemStyle: { color: PALETTE.gray },
+      },
+      {
+        name: '总到诊', type: 'bar', barWidth: 14, data: ordered.map((r) => r['总到诊']),
+        itemStyle: { color: PALETTE.blue },
+      },
+      {
+        name: '总完成率', type: 'line', yAxisIndex: 1, data: ordered.map((r) => r['总完成率']),
+        lineStyle: { color: PALETTE.amber, width: 2 }, itemStyle: { color: PALETTE.amber }, symbolSize: 6,
+      },
+    ],
+  });
+  return chart;
+}
+
 function resizeAll(charts) {
   window.addEventListener('resize', () => charts.forEach((c) => c.resize()));
 }
@@ -112,7 +147,9 @@ function resizeAll(charts) {
 (async () => {
   const charts = [];
   try {
-    const [stores, consults, doctors] = await Promise.all([load('stores'), load('consults'), load('doctors')]);
+    const [stores, consults, doctors, web, market, referral] = await Promise.all([
+      load('stores'), load('consults'), load('doctors'), load('web'), load('market'), load('referral'),
+    ]);
 
     document.getElementById('updated-at').textContent = '更新于 ' + (stores.updated_at || '--');
 
@@ -120,10 +157,16 @@ function resizeAll(charts) {
     charts.push(storeMixChart(stores));
     charts.push(targetVsActual('consult-chart', consults, '咨询人员', '实收金额'));
     charts.push(targetVsActual('doctor-chart', doctors, '医生', '医生业绩'));
+    charts.push(visitVsRate('web-chart', web));
+    charts.push(visitVsRate('market-chart', market));
+    charts.push(visitVsRate('referral-chart', referral));
 
     renderTable(document.getElementById('store-table'), stores);
     renderTable(document.getElementById('consult-table'), consults);
     renderTable(document.getElementById('doctor-table'), doctors);
+    renderTable(document.getElementById('web-table'), web);
+    renderTable(document.getElementById('market-table'), market);
+    renderTable(document.getElementById('referral-table'), referral);
 
     resizeAll(charts);
   } catch (e) {
