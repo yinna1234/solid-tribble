@@ -7,7 +7,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -91,6 +91,13 @@ def to_number(s):
         return s
 
 
+CN_TZ = timezone(timedelta(hours=8))  # Actions 服务器是 UTC,固定成北京时间
+
+
+def now_cn():
+    return datetime.now(CN_TZ)
+
+
 def build_payload(name, rows):
     if not rows or len(rows) < 2:
         return {"columns": [], "rows": [], "empty": True}
@@ -105,7 +112,7 @@ def build_payload(name, rows):
             item[col] = to_number(val)
         data.append(item)
     return {
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "updated_at": now_cn().strftime("%Y-%m-%d %H:%M"),
         "source": "宏脉BI报表平台",
         "table": name,
         "columns": header,
