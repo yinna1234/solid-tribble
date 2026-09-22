@@ -19,7 +19,8 @@ function colKey(rows, keyword) {
 }
 
 async function load(name) {
-  const resp = await fetch('data/' + name + '.json');
+  // 加时间戳防缓存:GitHub Pages 默认缓存10分钟,不加的话数据更新后浏览器可能还拿旧文件
+  const resp = await fetch('data/' + name + '.json?t=' + Date.now());
   if (!resp.ok) throw new Error(name + '.json 加载失败: ' + resp.status);
   return resp.json();
 }
