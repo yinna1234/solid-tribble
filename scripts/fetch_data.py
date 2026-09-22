@@ -70,11 +70,11 @@ SCROLL_EXTRACT_JS = """
 }
 """
 
-# 渐进滚动:把每个待抽取表的网格滚动容器滚到 frac 位置,配合轮询等待渲染,
-# 应对只渲染可视区的虚拟滚动表格(否则只能抽到前 ~8 行)
-SCROLL_GRID_JS = """
-(args) => {
-  const targets = args.targets, frac = args.frac;
+# 展开网格容器:把每个待抽取表所有"有滚动条"的祖先节点高度撑开、取消裁剪,
+# 这样即便帆软把行绝对定位在 .bottom_right 里(只是被外层容器 overflow 裁掉),
+# 全部行也会一次性进入 DOM,无需靠滚动触发虚拟渲染。
+EXPAND_GRID_JS = """
+(targets) => {
   for (const t of targets) {
     const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
       .find(e => e.children.length === 0 && e.textContent.trim() === t);
@@ -85,9 +85,45 @@ SCROLL_GRID_JS = """
     }
     const grid = box.querySelector('.simpleGrid');
     if (!grid) continue;
-    const h = grid.scrollHeight || 0;
-    for (const node of [grid, grid.querySelector('.bottom_right'), grid.parentElement]) {
-      if (node) node.scrollTop = h * frac;
+    let node = grid;
+    while (node) {
+      if (node.scrollHeight > node.clientHeight + 4) {
+        node.style.height = node.scrollHeight + 'px';
+        node.style.overflow = 'visible';
+        node.style.maxHeight = 'none';
+      }
+      node = node.parentElement;
+    }
+  }
+}
+"""
+
+# 渐进滚动:把每个待抽取表【所有可滚动祖先 + 网格自身】滚到 frac 位置,并派发 scroll 事件,
+# 配合轮询等待渲染,应对只渲染可视区的虚拟滚动表格(否则只能抽到前 ~8 行)。
+# 注意:只滚 grid/.bottom_right/parentElement 很可能没碰到真正的滚动容器,这里改为递归全部祖先。
+SCROLL_GRID_JS = """
+(args) => {
+  const targets = args.targets, frac = args.frac;
+  const fire = (node) => {
+    if (!node) return;
+    const h = node.scrollHeight || 0;
+    if (h > 0) node.scrollTop = h * frac;
+    node.dispatchEvent(new Event('scroll', { bubbles: true }));
+  };
+  for (const t of targets) {
+    const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
+      .find(e => e.children.length === 0 && e.textContent.trim() === t);
+    if (!el) continue;
+    let box = el;
+    while (box && box.getAttribute && box.getAttribute('data-elemtype') == null && box.parentElement) {
+      box = box.parentElement;
+    }
+    const grid = box.querySelector('.simpleGrid');
+    if (!grid) continue;
+    let node = grid;
+    while (node) {
+      if (node.scrollHeight > node.clientHeight + 4) fire(node);
+      node = node.parentElement;
     }
   }
 }
@@ -149,7 +185,10 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, executable_path=chrome_path)
-        page = browser.new_page(viewport={"width": 1920, "height": 1080})
+        # 视口拉高:帆软 simpleGrid 只渲染"可见区"内的行,可见区大小随视口高度变化。
+        # CI 默认 1080 高只装得下约 8 行,故本地能抓全(15/25)而 CI 只抓 8/8。
+        # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
+        page = browser.new_page(viewport={"width": 1920, "height": 4000})
         page.goto(VIEWER_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
 
@@ -177,10 +216,14 @@ def main():
         raw_header = {name: None for name in TABLE_NAMES}
         stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
         pending = list(TABLE_NAMES)
-        for i in range(20):
+        for i in range(25):
             if not pending:
                 break
-            frac = min(1.0, i / 12.0)                      # 0→1 扫一遍滚动容器
+            frac = min(1.0, i / 16.0)                      # 0→1 更细地扫一遍滚动容器
+            try:
+                page.evaluate(EXPAND_GRID_JS, pending)     # 先撑开容器,解除裁剪
+            except Exception as e:
+                print("展开跳过:", e)
             try:
                 page.evaluate(SCROLL_GRID_JS, {"targets": pending, "frac": frac})
             except Exception as e:
