@@ -183,14 +183,13 @@ def main():
         raw_rows = {name: {} for name in TABLE_NAMES}     # name -> {签名: 行}
         raw_header = {name: None for name in TABLE_NAMES}
         stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
-        wheel_step = {name: 0 for name in TABLE_NAMES}    # 每张表自己的滚轮步数(表刚出现先滚0抓顶部)
         pending = list(TABLE_NAMES)
-        for i in range(30):
+        for i in range(50):
             if not pending:
                 break
-            # 模拟真实滚轮:鼠标移到每张待抽取表的网格上向下滚。
-            # 关键:步数按"每张表自己出现后的轮数"算,不能用全局轮数——
-            # 否则慢表(渲染20s+)出现时全局已轮9+,一上来就滚到底,只抓到最后一行"合计"。
+            # 模拟真实滚轮:鼠标移到每张待抽取表的网格上,每轮只向下滚一小步(120px)。
+            # 用小步长 + 多轮,让相邻采样窗口大量重叠,确保中间每一行都至少落入一个窗口被抓到,
+            # 不会像大步跳(200*n)那样漏掉落在两次采样缝隙里的中间行。
             try:
                 boxes = page.evaluate(GRID_BOX_JS, pending)
             except Exception as e:
@@ -202,11 +201,10 @@ def main():
                     continue
                 try:
                     page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
-                    page.mouse.wheel(0, 200 * wheel_step[t])
-                    wheel_step[t] += 1
+                    page.mouse.wheel(0, 120)
                 except Exception as e:
                     print("滚轮跳过:", e)
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(4000)
             res = page.evaluate(SCROLL_EXTRACT_JS, pending)
             for name, rows in res.items():
                 if isinstance(rows, list) and len(rows) >= 2:
