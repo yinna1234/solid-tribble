@@ -70,62 +70,30 @@ SCROLL_EXTRACT_JS = """
 }
 """
 
-# 展开网格容器:把每个待抽取表所有"有滚动条"的祖先节点高度撑开、取消裁剪,
-# 这样即便帆软把行绝对定位在 .bottom_right 里(只是被外层容器 overflow 裁掉),
-# 全部行也会一次性进入 DOM,无需靠滚动触发虚拟渲染。
-EXPAND_GRID_JS = """
+# 定位网格:返回每张待抽取表的 .simpleGrid 中心坐标(供 mouse.move 用)。
+# 帆软虚拟表格只认真实滚轮/指针事件,直接改 scrollTop 或撑开容器都无法触发它渲染下面的行,
+# 所以策略改为:鼠标移到网格上 → page.mouse.wheel 逐段下滚 → 每段等渲染后抽取 → 跨轮累计去重。
+GRID_BOX_JS = """
 (targets) => {
+  const out = {};
   for (const t of targets) {
     const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
       .find(e => e.children.length === 0 && e.textContent.trim() === t);
-    if (!el) continue;
+    if (!el) { out[t] = null; continue; }
     let box = el;
     while (box && box.getAttribute && box.getAttribute('data-elemtype') == null && box.parentElement) {
       box = box.parentElement;
     }
     const grid = box.querySelector('.simpleGrid');
-    if (!grid) continue;
-    let node = grid;
-    while (node) {
-      if (node.scrollHeight > node.clientHeight + 4) {
-        node.style.height = node.scrollHeight + 'px';
-        node.style.overflow = 'visible';
-        node.style.maxHeight = 'none';
-      }
-      node = node.parentElement;
-    }
+    if (!grid) { out[t] = null; continue; }
+    const r = grid.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) { out[t] = null; continue; }
+    out[t] = {
+      x: Math.round(r.x + r.width / 2),
+      y: Math.round(r.y + Math.min(r.height / 2, 300))
+    };
   }
-}
-"""
-
-# 渐进滚动:把每个待抽取表【所有可滚动祖先 + 网格自身】滚到 frac 位置,并派发 scroll 事件,
-# 配合轮询等待渲染,应对只渲染可视区的虚拟滚动表格(否则只能抽到前 ~8 行)。
-# 注意:只滚 grid/.bottom_right/parentElement 很可能没碰到真正的滚动容器,这里改为递归全部祖先。
-SCROLL_GRID_JS = """
-(args) => {
-  const targets = args.targets, frac = args.frac;
-  const fire = (node) => {
-    if (!node) return;
-    const h = node.scrollHeight || 0;
-    if (h > 0) node.scrollTop = h * frac;
-    node.dispatchEvent(new Event('scroll', { bubbles: true }));
-  };
-  for (const t of targets) {
-    const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
-      .find(e => e.children.length === 0 && e.textContent.trim() === t);
-    if (!el) continue;
-    let box = el;
-    while (box && box.getAttribute && box.getAttribute('data-elemtype') == null && box.parentElement) {
-      box = box.parentElement;
-    }
-    const grid = box.querySelector('.simpleGrid');
-    if (!grid) continue;
-    let node = grid;
-    while (node) {
-      if (node.scrollHeight > node.clientHeight + 4) fire(node);
-      node = node.parentElement;
-    }
-  }
+  return out;
 }
 """
 
@@ -219,15 +187,22 @@ def main():
         for i in range(25):
             if not pending:
                 break
-            frac = min(1.0, i / 16.0)                      # 0→1 更细地扫一遍滚动容器
+            # 模拟真实滚轮:鼠标移到每张待抽取表的网格上向下滚。第 1 轮滚 0(先抓顶部),
+            # 之后每轮多滚 200px,逐段覆盖全部行;配合抽取+签名去重,只多不少。
             try:
-                page.evaluate(EXPAND_GRID_JS, pending)     # 先撑开容器,解除裁剪
+                boxes = page.evaluate(GRID_BOX_JS, pending)
             except Exception as e:
-                print("展开跳过:", e)
-            try:
-                page.evaluate(SCROLL_GRID_JS, {"targets": pending, "frac": frac})
-            except Exception as e:
-                print("滚动跳过:", e)
+                boxes = {}
+                print("定位跳过:", e)
+            for t in pending:
+                b = boxes.get(t)
+                if not b:
+                    continue
+                try:
+                    page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
+                    page.mouse.wheel(0, 200 * i)
+                except Exception as e:
+                    print("滚轮跳过:", e)
             page.wait_for_timeout(5000)
             res = page.evaluate(SCROLL_EXTRACT_JS, pending)
             for name, rows in res.items():
