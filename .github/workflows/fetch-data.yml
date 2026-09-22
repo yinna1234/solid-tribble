@@ -25,10 +25,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip # 缓存 pip 下载,省几秒
+          cache-dependency-path: scripts/requirements.txt
+
+      # 缓存 Playwright 的 chromium(约160MB),命中后跳过下载,是提速大头
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('scripts/requirements.txt') }}
 
       - name: Install deps
         run: |
           pip install -r scripts/requirements.txt
+          # 浏览器已命中缓存时此步只补系统依赖,秒级完成;未命中才完整下载
           playwright install --with-deps chromium
 
       - name: Fetch tables

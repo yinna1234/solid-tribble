@@ -158,7 +158,7 @@ def main():
         # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
         page = browser.new_page(viewport={"width": 1920, "height": 4000})
         page.goto(VIEWER_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(3000)
 
         inputs = page.locator("input")
         user_input = pass_input = None
@@ -204,7 +204,7 @@ def main():
                     page.mouse.wheel(0, 120)
                 except Exception as e:
                     print("滚轮跳过:", e)
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(3000)
             res = page.evaluate(SCROLL_EXTRACT_JS, pending)
             for name, rows in res.items():
                 if isinstance(rows, list) and len(rows) >= 2:
