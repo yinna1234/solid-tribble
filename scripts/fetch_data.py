@@ -70,6 +70,29 @@ SCROLL_EXTRACT_JS = """
 }
 """
 
+# 渐进滚动:把每个待抽取表的网格滚动容器滚到 frac 位置,配合轮询等待渲染,
+# 应对只渲染可视区的虚拟滚动表格(否则只能抽到前 ~8 行)
+SCROLL_GRID_JS = """
+(args) => {
+  const targets = args.targets, frac = args.frac;
+  for (const t of targets) {
+    const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
+      .find(e => e.children.length === 0 && e.textContent.trim() === t);
+    if (!el) continue;
+    let box = el;
+    while (box && box.getAttribute && box.getAttribute('data-elemtype') == null && box.parentElement) {
+      box = box.parentElement;
+    }
+    const grid = box.querySelector('.simpleGrid');
+    if (!grid) continue;
+    const h = grid.scrollHeight || 0;
+    for (const node of [grid, grid.querySelector('.bottom_right'), grid.parentElement]) {
+      if (node) node.scrollTop = h * frac;
+    }
+  }
+}
+"""
+
 
 def get_credentials():
     user = os.environ.get("BI_USER")
@@ -146,32 +169,50 @@ def main():
         pass_input.fill(pwd)
         pass_input.press("Enter")
 
-        # 轮询抽取:标题/网格/数据可能延迟渲染(Exploded 型约 20s+),最多 15 轮
-        # 只有抽到非空数组才算完成,否则下一轮重试
-        raw = {}
+        # 轮询抽取 + 渐进滚动:
+        #  - 标题/网格/数据可能延迟渲染(Exploded 型约 20s+),需等待
+        #  - 表格可能只渲染可视区(虚拟滚动),需逐步滚动滚动容器,跨轮累计去重才能拿到全部行
+        # 累计策略:同一行用"各单元格拼接"作签名去重,这样无论分几轮、滚到哪,全集都能凑齐且不重复
+        raw_rows = {name: {} for name in TABLE_NAMES}     # name -> {签名: 行}
+        raw_header = {name: None for name in TABLE_NAMES}
+        stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
         pending = list(TABLE_NAMES)
-        for i in range(15):
+        for i in range(20):
             if not pending:
                 break
+            frac = min(1.0, i / 12.0)                      # 0→1 扫一遍滚动容器
+            try:
+                page.evaluate(SCROLL_GRID_JS, {"targets": pending, "frac": frac})
+            except Exception as e:
+                print("滚动跳过:", e)
             page.wait_for_timeout(5000)
             res = page.evaluate(SCROLL_EXTRACT_JS, pending)
             for name, rows in res.items():
-                if isinstance(rows, list) and rows:
-                    raw[name] = rows
-            pending = [t for t in TABLE_NAMES if t not in raw]
-            print(f"round {i + 1}: 已抽取={list(raw.keys())} 待抽取={pending}")
+                if isinstance(rows, list) and len(rows) >= 2:
+                    raw_header[name] = rows[0]
+                    added = 0
+                    for r in rows[1:]:
+                        sig = "\u0001".join("" if v is None else str(v) for v in r)
+                        if sig not in raw_rows[name]:
+                            raw_rows[name][sig] = r
+                            added += 1
+                    stable[name] = stable[name] + 1 if added == 0 else 0
+            pending = [t for t in TABLE_NAMES if raw_header.get(t) is None or stable.get(t, 0) < 2]
+            print(f"round {i + 1}: 各表行数={ {n: len(raw_rows[n]) for n in TABLE_NAMES} } 待抽取={pending}")
         page.wait_for_timeout(2000)
         browser.close()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ok = []
     for name in TABLE_NAMES:
-        payload = build_payload(name, raw.get(name))
+        header = raw_header[name]
+        data_rows = list(raw_rows[name].values())
+        rows_arg = [header] + data_rows if header else None
+        payload = build_payload(name, rows_arg)
         out = OUT_DIR / f"{FILE_KEYS[name]}.json"
         with open(out, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        n = len(payload["rows"])
-        ok.append(f"{name}: {n} 行 -> {out.name}")
+        ok.append(f"{name}: {len(data_rows)} 行 -> {out.name}")
     print("\n".join(ok))
     # 不因某张表为空而整体失败:仅打印警告,保证其它表正常发布
     for n in TABLE_NAMES:

@@ -15,7 +15,7 @@ const fmtInt = (v) => (typeof v === 'number' ? Math.round(v).toLocaleString('zh-
 /* 按关键字模糊找列名:BI 表头偶尔会变(如"门店名称（全部）"变"门店名称（全部"),精确匹配会失灵 */
 function colKey(rows, keyword) {
   const keys = Object.keys(rows[0] || {});
-  return keys.find((k) => k.includes(keyword)) || keyword;
+  return keys.find((k) => k.includes(keyword)) || keys[0] || keyword;
 }
 
 async function load(name) {
@@ -36,7 +36,7 @@ function renderTable(el, payload) {
 /* 门店:完成率横向条形 */
 function storeRateChart(payload) {
   const rows = [...payload.rows].sort((a, b) => b['业绩完成率'] - a['业绩完成率']);
-  const nameKey = colKey(rows, '门店名称');
+  const nameKey = colKey(rows, '门店');
   const chart = echarts.init(document.getElementById('store-rate'));
   chart.setOption({
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (ps) => `${ps[0].name}<br>业绩完成率:${ps[0].value}%` },
@@ -66,7 +66,7 @@ function storeRateChart(payload) {
 /* 门店:业绩构成堆叠 */
 function storeMixChart(payload) {
   const chart = echarts.init(document.getElementById('store-mix'));
-  const nameKey = colKey(payload.rows, '门店名称');
+  const nameKey = colKey(payload.rows, '门店');
   const names = payload.rows.map((r) => r[nameKey]);
   const parts = [
     ['初诊业绩', PALETTE.blue],
