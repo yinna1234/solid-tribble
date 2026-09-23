@@ -106,6 +106,27 @@ def get_credentials():
     return user, pwd
 
 
+def login(page, user, pwd):
+    """打开报表页并登录。页面偶发自行导航(会话超时等)导致执行上下文销毁时,用它恢复。"""
+    page.goto(VIEWER_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3000)
+    inputs = page.locator("input")
+    user_input = pass_input = None
+    for i in range(inputs.count()):
+        el = inputs.nth(i)
+        t = el.get_attribute("type") or ""
+        if t == "password":
+            pass_input = el
+        elif user_input is None and t not in ("hidden", "checkbox", "radio"):
+            user_input = el
+    if user_input is None or pass_input is None:
+        return False
+    user_input.fill(user)
+    pass_input.fill(pwd)
+    pass_input.press("Enter")
+    return True
+
+
 def to_number(s):
     """'2,465,912.1' -> 2465912.1;'112.09%' -> 112.09;失败返回原字符串"""
     if not isinstance(s, str):
@@ -157,24 +178,8 @@ def main():
         # CI 默认 1080 高只装得下约 8 行,故本地能抓全(15/25)而 CI 只抓 8/8。
         # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
         page = browser.new_page(viewport={"width": 1920, "height": 4000})
-        page.goto(VIEWER_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3000)
-
-        inputs = page.locator("input")
-        user_input = pass_input = None
-        for i in range(inputs.count()):
-            el = inputs.nth(i)
-            t = el.get_attribute("type") or ""
-            if t == "password":
-                pass_input = el
-            elif user_input is None and t not in ("hidden", "checkbox", "radio"):
-                user_input = el
-        if user_input is None or pass_input is None:
+        if not login(page, user, pwd):
             sys.exit("未找到登录输入框,页面结构可能变了")
-
-        user_input.fill(user)
-        pass_input.fill(pwd)
-        pass_input.press("Enter")
 
         # 轮询抽取 + 渐进滚动:
         #  - 标题/网格/数据可能延迟渲染(Exploded 型约 20s+),需等待
@@ -184,6 +189,7 @@ def main():
         raw_header = {name: None for name in TABLE_NAMES}
         stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
         pending = list(TABLE_NAMES)
+        eval_fail_streak = 0  # 连续抽取失败次数(页面导航/会话过期会导致执行上下文销毁)
         for i in range(50):
             if not pending:
                 break
@@ -205,7 +211,24 @@ def main():
                 except Exception as e:
                     print("滚轮跳过:", e)
             page.wait_for_timeout(3000)
-            res = page.evaluate(SCROLL_EXTRACT_JS, pending)
+            # 抓取也容错:页面偶发自行导航(会话超时等)会销毁执行上下文,这里不能让单次失败炸掉整个进程。
+            # 已抓到的行有签名去重累计着,跳一轮不丢数据;连续失败则重新登录恢复会话。
+            try:
+                res = page.evaluate(SCROLL_EXTRACT_JS, pending)
+                eval_fail_streak = 0
+            except Exception as e:
+                eval_fail_streak += 1
+                print("抽取跳过:", e)
+                if eval_fail_streak >= 3:
+                    print("连续抽取失败,尝试重新登录恢复会话")
+                    try:
+                        if login(page, user, pwd):
+                            eval_fail_streak = 0
+                        else:
+                            print("重新登录未找到输入框,下轮继续重试")
+                    except Exception as e2:
+                        print("重新登录失败:", e2)
+                continue
             for name, rows in res.items():
                 if isinstance(rows, list) and len(rows) >= 2:
                     raw_header[name] = rows[0]
