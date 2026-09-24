@@ -17,7 +17,7 @@ VIEWER_URL = (
     BASE + "/bi/viewer?proc=1&action=viewer&hback=true"
     "&db=__MY_DB__!2f!2026!5468!!5e74!!5e86!!2f!!6570!!636e!!96c6!!8868!!683c!.db"
 )
-TABLE_NAMES = ["门店数据", "咨询数据", "医生数据", "网电数据", "市场数据", "老带新数据"]
+TABLE_NAMES = ["门店数据", "咨询数据", "医生数据", "网电数据", "市场数据", "老带新数据", "门店每日数据"]
 FILE_KEYS = {
     "门店数据": "stores",
     "咨询数据": "consults",
@@ -25,6 +25,7 @@ FILE_KEYS = {
     "网电数据": "web",
     "市场数据": "market",
     "老带新数据": "referral",
+    "门店每日数据": "daily",
 }
 OUT_DIR = Path(__file__).resolve().parent.parent / "site" / "data"
 
