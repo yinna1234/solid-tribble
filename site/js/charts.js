@@ -149,6 +149,100 @@ function visitVsRate(id, payload) {
   return chart;
 }
 
+/* 门店每日业绩:日期为 x 轴,默认显示全门店每日总计,下拉可切换单个门店 */
+function dailyPerformChart(payload) {
+  const rows = payload.rows;
+  const dateKey = colKey(rows, '时间') || '时间';
+  const storeKey = colKey(rows, '门店') || '门店';
+  const amtKey = colKey(rows, '金额') || '实收金额';
+
+  const parseDate = (s) => {
+    const m = String(s).match(/(\d+)年(\d+)月(\d+)日/);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0;
+  };
+  const labelFmt = (s) => {
+    const m = String(s).match(/(\d+)年(\d+)月(\d+)日/);
+    return m ? +m[2] + '/' + +m[3] : s;
+  };
+  const num = (v) => {
+    if (typeof v === 'number') return v;
+    if (v === '' || v == null) return null;
+    const n = parseFloat(String(v).replace(/[, ]/g, ''));
+    return isNaN(n) ? null : n;
+  };
+
+  // 日期升序去重(可能跨月)
+  const dates = [...new Set(rows.map((r) => r[dateKey]))].sort((a, b) => parseDate(a) - parseDate(b));
+  // 门店按首次出现顺序排列
+  const storeNames = [];
+  rows.forEach((r) => { if (!storeNames.includes(r[storeKey])) storeNames.push(r[storeKey]); });
+
+  const totalByDate = dates.map((d) => {
+    const valid = rows.filter((r) => r[dateKey] === d).map((r) => num(r[amtKey])).filter((v) => v != null);
+    return valid.length ? valid.reduce((a, b) => a + b, 0) : null;
+  });
+  const storeByDate = (store) =>
+    dates.map((d) => {
+      const r = rows.find((x) => x[dateKey] === d && x[storeKey] === store);
+      return r ? num(r[amtKey]) : null;
+    });
+
+  const chart = echarts.init(document.getElementById('daily-chart'));
+  const select = document.getElementById('daily-store-select');
+  select.innerHTML =
+    '<option value="__all__">每日总计（全门店）</option>' +
+    storeNames.map((s) => '<option value="' + s + '">' + s + '</option>').join('');
+
+  function render(view) {
+    let data, name, color;
+    if (view === '__all__') {
+      data = totalByDate;
+      name = '每日总计（全门店）';
+      color = PALETTE.blue;
+    } else {
+      data = storeByDate(view);
+      name = view + ' 每日业绩';
+      color = PALETTE.red;
+    }
+    chart.setOption(
+      {
+        tooltip: { trigger: 'axis', valueFormatter: (v) => (v == null ? '—' : fmtWan(v) + ' 万') },
+        grid: { left: 60, right: 30, top: 30, bottom: dates.length > 15 ? 60 : 40 },
+        xAxis: {
+          type: 'category',
+          data: dates.map(labelFmt),
+          axisLabel: { color: '#333', rotate: dates.length > 15 ? 45 : 0 },
+          boundaryGap: false,
+        },
+        yAxis: {
+          type: 'value',
+          name: '实收金额',
+          axisLabel: { color: PALETTE.axis, formatter: (v) => (v / 10000).toFixed(1) + '万' },
+          splitLine: { lineStyle: { color: PALETTE.split } },
+        },
+        series: [
+          {
+            name,
+            type: 'line',
+            smooth: true,
+            connectNulls: true,
+            data,
+            itemStyle: { color },
+            lineStyle: { color, width: 2 },
+            areaStyle: { color: color + '22' },
+            symbolSize: 6,
+          },
+        ],
+      },
+      true
+    );
+  }
+
+  render('__all__');
+  select.addEventListener('change', (e) => render(e.target.value));
+  return chart;
+}
+
 function resizeAll(charts) {
   window.addEventListener('resize', () => charts.forEach((c) => c.resize()));
 }
@@ -156,8 +250,8 @@ function resizeAll(charts) {
 (async () => {
   const charts = [];
   try {
-    const [stores, consults, doctors, web, market, referral] = await Promise.all([
-      load('stores'), load('consults'), load('doctors'), load('web'), load('market'), load('referral'),
+    const [stores, consults, doctors, web, market, referral, daily] = await Promise.all([
+      load('stores'), load('consults'), load('doctors'), load('web'), load('market'), load('referral'), load('daily'),
     ]);
 
     document.getElementById('updated-at').textContent = '更新于 ' + (stores.updated_at || '--');
@@ -169,6 +263,7 @@ function resizeAll(charts) {
     charts.push(visitVsRate('web-chart', web));
     charts.push(visitVsRate('market-chart', market));
     charts.push(visitVsRate('referral-chart', referral));
+    charts.push(dailyPerformChart(daily));
 
     renderTable(document.getElementById('store-table'), stores);
     renderTable(document.getElementById('consult-table'), consults);
@@ -176,6 +271,7 @@ function resizeAll(charts) {
     renderTable(document.getElementById('web-table'), web);
     renderTable(document.getElementById('market-table'), market);
     renderTable(document.getElementById('referral-table'), referral);
+    renderTable(document.getElementById('daily-table'), daily);
 
     resizeAll(charts);
   } catch (e) {

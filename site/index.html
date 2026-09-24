@@ -39,6 +39,22 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>门店每日业绩</h2>
+        <span class="sub">实收金额趋势 · 下拉切换门店</span>
+      </div>
+      <div class="card-tools">
+        <label for="daily-store-select">门店</label>
+        <select id="daily-store-select"></select>
+      </div>
+      <div id="daily-chart" class="chart tall"></div>
+      <details class="raw">
+        <summary>查看门店每日数据明细</summary>
+        <div class="table-wrap" id="daily-table"></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>咨询数据</h2>
         <span class="sub">业绩目标 vs 实收金额</span>
       </div>
