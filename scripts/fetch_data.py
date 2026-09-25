@@ -71,11 +71,25 @@ SCROLL_EXTRACT_JS = """
 }
 """
 
-# 定位网格:返回每张待抽取表的 .simpleGrid 中心坐标(供 mouse.move 用)。
+# 定位网格:返回每张待抽取表的 .simpleGrid 中心坐标(供 mouse.move 用)及"是否已滚到底"标志。
 # 帆软虚拟表格只认真实滚轮/指针事件,直接改 scrollTop 或撑开容器都无法触发它渲染下面的行,
 # 所以策略改为:鼠标移到网格上 → page.mouse.wheel 逐段下滚 → 每段等渲染后抽取 → 跨轮累计去重。
+# 自适应:通过滚动容器的 scrollTop/clientHeight/scrollHeight 判断是否到底,到底即停止滚动,
+# 配合"连续2轮无新增"判定该表抓全 —— 不再依赖固定轮数,表多大就滚多大(45天×5店也不会漏行)。
 GRID_BOX_JS = """
 (targets) => {
+  const findScroller = (node) => {
+    let n = node;
+    while (n) {
+      const style = getComputedStyle(n);
+      if (n.scrollHeight > n.clientHeight + 2 &&
+          (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
+        return n;
+      }
+      n = n.parentElement;
+    }
+    return node;
+  };
   const out = {};
   for (const t of targets) {
     const el = [...document.querySelectorAll('div,span,h1,h2,h3,p')]
@@ -89,9 +103,13 @@ GRID_BOX_JS = """
     if (!grid) { out[t] = null; continue; }
     const r = grid.getBoundingClientRect();
     if (r.width < 10 || r.height < 10) { out[t] = null; continue; }
+    const sc = findScroller(grid);
+    const sh = sc.scrollHeight, ch = sc.clientHeight, st = sc.scrollTop;
+    const atBottom = sh <= ch + 2 || (st + ch >= sh - 4);
     out[t] = {
       x: Math.round(r.x + r.width / 2),
-      y: Math.round(r.y + Math.min(r.height / 2, 300))
+      y: Math.round(r.y + Math.min(r.height / 2, 300)),
+      atBottom
     };
   }
   return out;
@@ -189,14 +207,19 @@ def main():
         raw_rows = {name: {} for name in TABLE_NAMES}     # name -> {签名: 行}
         raw_header = {name: None for name in TABLE_NAMES}
         stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
+        at_bottom = {name: False for name in TABLE_NAMES}  # 该表是否已滚到底(自适应退出用)
         pending = list(TABLE_NAMES)
         eval_fail_streak = 0  # 连续抽取失败次数(页面导航/会话过期会导致执行上下文销毁)
-        for i in range(50):
+        # 自适应滚动:不再靠固定轮数,而是每张表滚到自己的底部(atBottom)且连续2轮无新增才判定抓全。
+        # 上限 150 轮仅作兜底(约覆盖 600 行,远大于 45天×5店=225 行),正常会在各表到底后自动退出。
+        for i in range(150):
             if not pending:
                 break
             # 模拟真实滚轮:鼠标移到每张待抽取表的网格上,每轮只向下滚一小步(120px)。
             # 用小步长 + 多轮,让相邻采样窗口大量重叠,确保中间每一行都至少落入一个窗口被抓到,
             # 不会像大步跳(200*n)那样漏掉落在两次采样缝隙里的中间行。
+            # 注意:每轮对所有待抓表都照常滚动(沿用已验证有效的机制);at_bottom 只参与"是否抓全"判定,
+            # 不用来跳过滚动 —— 否则一旦帆软滚动容器被误判为"已到底",会提前退出而漏抓行。
             try:
                 boxes = page.evaluate(GRID_BOX_JS, pending)
             except Exception as e:
@@ -206,6 +229,7 @@ def main():
                 b = boxes.get(t)
                 if not b:
                     continue
+                at_bottom[t] = bool(b.get("atBottom"))
                 try:
                     page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
                     page.mouse.wheel(0, 120)
@@ -240,8 +264,13 @@ def main():
                             raw_rows[name][sig] = r
                             added += 1
                     stable[name] = stable[name] + 1 if added == 0 else 0
-            pending = [t for t in TABLE_NAMES if raw_header.get(t) is None or stable.get(t, 0) < 2]
-            print(f"round {i + 1}: 各表行数={ {n: len(raw_rows[n]) for n in TABLE_NAMES} } 待抽取={pending}")
+            # 判定抓全:① 已拿到表头;② 该表已滚到底;③ 连续2轮无新增。
+            # 任一未满足则继续(尤其大表没到底前,即使某轮无新增也不提前退出,防止漏抓前面行)。
+            pending = [
+                t for t in TABLE_NAMES
+                if raw_header.get(t) is None or not (at_bottom.get(t, False) and stable.get(t, 0) >= 2)
+            ]
+            print(f"round {i + 1}: 各表行数={ {n: len(raw_rows[n]) for n in TABLE_NAMES} } 到底={ {n: at_bottom[n] for n in TABLE_NAMES} } 待抽取={pending}")
         page.wait_for_timeout(2000)
         browser.close()
 
