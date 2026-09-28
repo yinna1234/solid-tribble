@@ -109,7 +109,8 @@ GRID_BOX_JS = """
     out[t] = {
       x: Math.round(r.x + r.width / 2),
       y: Math.round(r.y + Math.min(r.height / 2, 300)),
-      atBottom
+      atBottom,
+      hasScroll: sh > ch + 2   // 表格内部是否真有滚动条(虚拟滚动/未全展开=true)
     };
   }
   return out;
@@ -230,11 +231,14 @@ def main():
                 if not b:
                     continue
                 at_bottom[t] = bool(b.get("atBottom"))
-                try:
-                    page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
-                    page.mouse.wheel(0, 240)
-                except Exception as e:
-                    print("滚轮跳过:", e)
+                # 只有表格内部真有滚动条时才滚轮:无滚动条的全渲染表直接抓,既省数十轮等待,
+                # 也避免对无滚动条表调 mouse.wheel 反而把整个浏览器页面往下卷,导致后续表定位偏移/漏抓。
+                if b.get("hasScroll"):
+                    try:
+                        page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
+                        page.mouse.wheel(0, 240)
+                    except Exception as e:
+                        print("滚轮跳过:", e)
             page.wait_for_timeout(1500)
             # 抓取也容错:页面偶发自行导航(会话超时等)会销毁执行上下文,这里不能让单次失败炸掉整个进程。
             # 已抓到的行有签名去重累计着,跳一轮不丢数据;连续失败则重新登录恢复会话。
