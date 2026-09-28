@@ -14,18 +14,22 @@
   const CONFIG = {
     /* 冲刺目标 = 基础目标 × SPRINT_K */
     sprintK: 1.18,
-    /* 门店展示顺序（决定弧段从右上开始、左右镜像的排布） */
-    order: ["神华店", "九星店", "青东店", "包百店", "校园店"],
-    /* 各店颜色 + 复诊到店率%（BI 报表无此指标，手填，可随时改） */
+    /* 门店展示顺序（决定弧段从右上开始、左右镜像的排布；不存在的名字会被忽略） */
+    order: ["神华店", "九星店", "青东店", "包百店", "校园店", "三级医院"],
+    /* 各店颜色 + 复诊到店率%（BI 报表无此指标，手填，可随时改）
+       注：三级医院等尚未进 BI 的门店也在这里配好色，等 BI 有数据即可自动沿用 */
     storeExtras: {
       神华店: { color: "#d9b876", revisit: 74 },
       九星店: { color: "#c99572", revisit: 62 },
       青东店: { color: "#8fb5a4", revisit: 81 },
       包百店: { color: "#86a0b4", revisit: 66 },
       校园店: { color: "#cfc9ba", revisit: 59 },
+      三级医院: { color: "#b98da0", revisit: 78 },
     },
-    /* BI 无数据的弧段：实收/初诊 = 目标×完成率的演示值，configOnly 仅作占位。
-       要去掉这个弧段：extraStores: [] 即可（版式自动退化为 5 段弧）。 */
+    /* 尚未进 BI 的门店：用配置值先占位（实收=目标×完成率），保住版式。
+       ★ 自动接管：一旦 BI 的门店表里出现同名门店，占位会让位给真实数据，
+         不会出现"同名算两遍"或"两版数字打架"。BI 接入后本段可整段删除。
+       要彻底去掉这个弧段：extraStores: [] 即可（版式自动退化为 5 段弧）。 */
     extraStores: [
       { id: "sy", name: "三级医院", color: "#b98da0", targetBase: 270, revPct: 68.1, initBase: 740, initPct: 64.3, revisit: 78 },
     ],
@@ -88,8 +92,10 @@
         revisit: ex.revisit != null ? ex.revisit : 0, // 复诊到店率%（BI 无，手填）
       };
     });
-    /* BI 外的弧段（纯配置值），补出 actual/initActual，渲染层无需区分 */
+    /* BI 之外的弧段（占位值）：BI 门店表里还没出现时才启用；
+       将来 BI 正式纳入该门店 → 上面的 stores 已按真实数据建好，这里直接跳过 */
     CONFIG.extraStores.forEach((s) => {
+      if (byName[s.name]) return;
       stores.push({
         ...s,
         actual: (s.targetBase * s.revPct) / 100,
