@@ -20,7 +20,9 @@ function colKey(rows, keyword) {
 
 async function load(name) {
   // 加时间戳防缓存:GitHub Pages 默认缓存10分钟,不加的话数据更新后浏览器可能还拿旧文件
-  const resp = await fetch('data/' + name + '.json?t=' + Date.now());
+  /* 绝对路径：页面在站点根(/ solid-tribble/)或子目录(/tables/)下都能取到同一份数据 */
+  const DATA_BASE = "/solid-tribble/data/";
+  const resp = await fetch(DATA_BASE + name + ".json?t=" + Date.now());
   if (!resp.ok) throw new Error(name + '.json 加载失败: ' + resp.status);
   return resp.json();
 }

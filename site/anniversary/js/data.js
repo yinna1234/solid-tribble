@@ -41,9 +41,15 @@
     ],
   };
 
-  /* 数据地址：优先同源 ../data/（部署在 Pages /anniversary/ 下时命中），
-     失败自动回退线上绝对地址（本地双击打开 / 任意静态服务器都能用） */
-  const BASES = ["../data/", "https://yinna1234.github.io/solid-tribble/data/"];
+  /* 数据地址（按顺序尝试，命中即用）：
+     - 页面在站点根（https://.../solid-tribble/）            → "data/"
+     - 页面在子目录（https://.../solid-tribble/anniversary/）→ "../data/"
+     - 绝对地址兜底（本地双击打开 / 任意静态服务器都能用）
+     按当前 URL 判断，避免多打一轮 404 请求。 */
+  const IN_SUBDIR = location.pathname.indexOf("/anniversary/") >= 0;
+  const BASES = IN_SUBDIR
+    ? ["../data/", "https://yinna1234.github.io/solid-tribble/data/"]
+    : ["data/", "https://yinna1234.github.io/solid-tribble/data/"];
 
   async function fetchJSON(file) {
     let lastErr;
