@@ -14,10 +14,14 @@
   const CONFIG = {
     /* 冲刺目标 = 基础目标 × SPRINT_K */
     sprintK: 1.18,
-    /* 门店展示顺序（决定弧段从右上开始、左右镜像的排布；不存在的名字会被忽略） */
+    /* 门店展示顺序（决定弧段从右上开始、左右镜像的排布；不存在的名字会被忽略）
+       「三级医院」是周年庆页面上的叫法，BI 门店表里这家店叫「医院」（见 aliases）。 */
     order: ["神华店", "九星店", "青东店", "包百店", "校园店", "三级医院"],
-    /* 各店颜色 + 复诊到店率%（BI 报表无此指标，手填，可随时改）
-       注：三级医院等尚未进 BI 的门店也在这里配好色，等 BI 有数据即可自动沿用 */
+    /* 页面叫法 → BI 门店表里的实际名字。找不到再按原名找，两边任一侧改名都不会断：
+       - BI 里叫「医院」、页面叫「三级医院」 → 走别名
+       - 哪天 BI 直接改名成「三级医院」     → 原名命中，别名自动失效，无需再改代码 */
+    aliases: { 三级医院: "医院" },
+    /* 各店颜色 + 复诊到店率%（BI 报表无此指标，手填，可随时改） */
     storeExtras: {
       神华店: { color: "#d9b876", revisit: 74 },
       九星店: { color: "#c99572", revisit: 62 },
@@ -27,12 +31,17 @@
       三级医院: { color: "#b98da0", revisit: 78 },
     },
     /* 尚未进 BI 的门店：用配置值先占位（实收=目标×完成率），保住版式。
-       ★ 自动接管：一旦 BI 的门店表里出现同名门店，占位会让位给真实数据，
-         不会出现"同名算两遍"或"两版数字打架"。BI 接入后本段可整段删除。
-       要彻底去掉这个弧段：extraStores: [] 即可（版式自动退化为 5 段弧）。 */
-    extraStores: [
-      { id: "sy", name: "三级医院", color: "#b98da0", targetBase: 270, revPct: 68.1, initBase: 740, initPct: 64.3, revisit: 78 },
-    ],
+       ★ 自动接管：一旦 BI 的门店表里出现同名（或别名）门店，占位会让位给真实数据，
+         不会出现"同名算两遍"或"两版数字打架"。
+       2026-09-29：「三级医院」在 BI 门店表里已上线（BI 里叫「医院」），
+       占位置空，全部改用真实数据。留空即可 —— 一旦往里加，弧段就会多出一段。
+       要临时恢复占位展示：把 { id:"sy", name:"三级医院", color:"#b98da0",
+       targetBase:270, revPct:68.1, initBase:740, initPct:64.3, revisit:78 } 填回来。 */
+    extraStores: [],
+    /* 圆环版式最多几段（渲染层 SEGMENTS 写死 6 段）。BI 门店数超过它时，
+       多出来的店会被丢掉并打印警告 —— 否则会取到 undefined 直接把看板打崩。
+       真要多加一家店，得同步改 main.js 的 SEGMENTS 和这里的数字。 */
+    maxSegments: 6,
     /* 渠道 chip ↔ BI 表：cum=累计到诊 target=总目标 today=今日到诊（取"合计"行） */
     channels: [
       { name: "网电", file: "web", color: "#d9b876" },
@@ -83,18 +92,27 @@
     const todayKey =
       cols.find((c) => /今日/.test(String(c)) && /业绩|实收|金额/.test(String(c))) ||
       cols.find((c) => /今日/.test(String(c)) && !/到诊|初诊/.test(String(c)));
+    /* 页面叫法 → BI 行的映射：原名优先，原名找不到再看别名（如 三级医院→医院）。
+       biName 记下来给下面的曲线按 BI 名字取每日数据用。 */
     const byName = {};
     storesRaw.rows.forEach((r) => (byName[r["门店"]] = r));
-    const names = CONFIG.order.filter((n) => byName[n]);
+    const rowOf = (n) => byName[n] || byName[CONFIG.aliases[n]] || null;
+    const biNameOf = (n) => (byName[n] ? n : CONFIG.aliases[n] || n);
+    const names = CONFIG.order.filter((n) => rowOf(n));
+    // 已被 order 占用的 BI 名字（含别名命中的，如「医院」已被「三级医院」占用），
+    // 否则 BI 里的「医院」会被当成"order 里没有的新店"再追加一次，弧段直接多出一段。
+    const usedBi = new Set(names.map(biNameOf));
     storesRaw.rows.forEach((r) => {
-      if (!names.includes(r["门店"])) names.push(r["门店"]);
+      const raw = r["门店"];
+      if (!names.includes(raw) && !usedBi.has(raw)) names.push(raw);
     });
     const stores = names.map((n) => {
-      const r = byName[n];
+      const r = rowOf(n);
       const ex = CONFIG.storeExtras[n] || {};
       return {
         id: n,
         name: n,
+        biName: biNameOf(n), // BI 门店表里这家店的实际名字（可能与页面叫法不同）
         color: ex.color || "#d4af37",
         targetBase: num(r["业绩目标"]) / 1e4, // 万
         actual: num(r["实收金额"]) / 1e4, // 万
@@ -114,15 +132,25 @@
        将来 BI 正式纳入该门店 → 上面的 stores 已按真实数据建好，这里直接跳过。
        占位门店 BI 没有"平均单体"，tooltip 里显示 — */
     CONFIG.extraStores.forEach((s) => {
-      if (byName[s.name]) return;
+      if (rowOf(s.name)) return; // 原名或别名在 BI 里已有数据 → 占位让位给真实值
       stores.push({
         ...s,
+        biName: s.name,
         avgTicket: null,
         todayRev: null, // BI 无此店 → 今日点仍走 daily
         actual: (s.targetBase * s.revPct) / 100,
         initActual: (s.initBase * s.initPct) / 100,
       });
     });
+    /* 超出版式的店直接丢弃（汇总指标要按剩下的算，否则大屏数字和弧段对不上账） */
+    const MAX_SEG = CONFIG.maxSegments || 6;
+    if (stores.length > MAX_SEG) {
+      const dropped = stores.slice(MAX_SEG).map((s) => s.name).join("、");
+      console.warn(
+        `[看板] BI 门店有 ${stores.length} 家，超出 ${MAX_SEG} 段版式，已忽略：${dropped}`,
+      );
+      stores.length = MAX_SEG;
+    }
 
     /* ── 渠道：优先取"合计"行，没有才逐行求和（排除合计防重复计数） ── */
     const todayOf = (r) =>
@@ -182,7 +210,8 @@
     const byId = {};
     const all = new Array(T).fill(0);
     stores.forEach((s) => {
-      const m = per[s.name] || {};
+      // 按 BI 里的真实店名取每日数据（页面叫「三级医院」但 BI 叫「医院」时也能取到）
+      const m = per[s.biName || s.name] || {};
       const arr = [];
       for (let d = 1; d <= T; d++) arr.push(m[d] || 0);
       /* 今日点（下标 T-1）用门店表实时「今日业绩」覆盖：
