@@ -435,7 +435,10 @@
       })();
 
       /* ══════════════════════════════════════════════════════════
-       * ⑦ 左栏：门店达成 + 复诊到店率（32px 行，6 行闭合）
+       * ⑦ 左栏：门店达成 + 初诊进度（32px 行，6 行闭合）
+       *    数据全部来自 BI 门店表：初诊到诊 / 初诊目标 / 初诊完成率
+       *    （2026-09-29 前这里是"复诊到店率"，用的是 CONFIG 里手填的 revisit，
+       *      BI 没有这个指标；现在换成 BI 原生的初诊三件套，不再依赖手填值。）
        * ══════════════════════════════════════════════════════════ */
       function renderRevRows(m) {
         $("rowsRev").innerHTML = m.stores
@@ -483,20 +486,21 @@
 
       /* setW=true：心跳重建后直接落位（入场时交给 entrance 统一铺开） */
       function renderRevisitRows(m, setW) {
-        const list = [...m.stores].sort((a, b) => b.revisit - a.revisit);
+        const list = [...m.stores].sort((a, b) => b.initPct - a.initPct);
         $("rowsRevisit").innerHTML = list
           .map((s) => {
-            const arrive = Math.round((initActualOf(s) * s.revisit) / 100);
+            const done = fmtI(initActualOf(s)),
+              goal = fmtI(s.initBase);
             return `<div class="sp-row">
               <div class="sp-l1">
                 <span class="dot" style="background:${s.color}"></span>
                 <span class="sp-name">${s.name}</span>
-                <span class="sp-meta">到店 ${arrive} 人 / 初诊 ${fmtI(initActualOf(s))} 人</span>
+                <span class="sp-meta">初诊 ${done} 人 / 目标 ${goal} 人</span>
               </div>
               <div class="sp-bar-wrap">
-                <span class="sp-bar"><i data-w="${s.revisit}"></i></span>
+                <span class="sp-bar"><i data-w="${clamp(s.initPct, 0, 100).toFixed(1)}"></i></span>
               </div>
-              <span class="sp-pct">${s.revisit}%</span>
+              <span class="sp-pct">${s.initPct.toFixed(1)}%</span>
             </div>`;
           })
           .join("");
@@ -505,7 +509,7 @@
             .querySelectorAll("i[data-w]")
             .forEach((el) => (el.style.width = el.dataset.w + "%"));
         $("tagRevisit").textContent =
-          `均值 ${(sumOf(m.stores, (s) => s.revisit) / m.stores.length).toFixed(1)}% · 按率降序`;
+          `均值 ${(sumOf(m.stores, (s) => s.initPct) / m.stores.length).toFixed(1)}% · 按率降序`;
       }
       renderRevisitRows(MODEL, false);
 
