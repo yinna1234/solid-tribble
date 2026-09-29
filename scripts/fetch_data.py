@@ -300,30 +300,41 @@ def harvest(page, user, pwd, url, tables, goto_page=True):
 def main():
     user, pwd = get_credentials()
     chrome_path = os.environ.get("CHROME_PATH") or None
-    # FETCH_MODE=main(默认,每10分钟) | daily(每天凌晨一次)
+    # FETCH_MODE=main(默认,每10分钟) | daily(每天凌晨一次) | both(手动补跑,两个页面都抓)
     mode = (os.environ.get("FETCH_MODE") or "main").strip().lower()
     if mode == "daily":
-        target_url, tables = DAILY_URL, [DAILY_TABLE]
+        plan = [(DAILY_URL, [DAILY_TABLE])]
+    elif mode == "both":
+        plan = [(VIEWER_URL, list(TABLE_NAMES)), (DAILY_URL, [DAILY_TABLE])]
     else:
         if mode != "main":
             print(f"未知 FETCH_MODE={mode!r},按 main 处理")
-        target_url, tables = VIEWER_URL, list(TABLE_NAMES)
-    print(f"=== FETCH_MODE={mode} 目标页面={target_url} 待抓表={tables} ===")
+            mode = "main"
+        plan = [(VIEWER_URL, list(TABLE_NAMES))]
+    want = [n for _, ts in plan for n in ts]
+    print(f"=== FETCH_MODE={mode} 计划={[(u.split('db=')[-1][:24], ts) for u, ts in plan]} ===")
 
+    raw_header, raw_rows = {}, {}
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, executable_path=chrome_path)
         # 视口拉高:帆软 simpleGrid 只渲染"可见区"内的行,可见区大小随视口高度变化。
         # CI 默认 1080 高只装得下约 8 行,故本地能抓全(15/25)而 CI 只抓 8/8。
         # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
         page = browser.new_page(viewport={"width": 1920, "height": 4000})
-        # daily 模式直接登录每日业绩页(它是独立 viewer,登录后会回跳该页)。
-        # 找不到输入框 = 页面结构变了,继续跑只会抓到 0 行并把线上好数据覆盖成空,故直接退出。
-        if not login(page, user, pwd, target_url):
-            sys.exit("未找到登录输入框,页面结构可能变了")
-
-        # 主页面 6 张表(咨询/医生已并排挪到页面底部,脚本按标题定位,与位置无关)
-        # daily 模式则只抓「门店每日数据」1 张表
-        raw_header, raw_rows = harvest(page, user, pwd, target_url, tables, goto_page=False)
+        for idx, (url, tables) in enumerate(plan):
+            if idx == 0:
+                # 第一个页面必须登录成功:找不到输入框 = 页面结构变了,
+                # 继续跑只会抓到 0 行,不如直接退出,保住上一份好数据。
+                if not login(page, user, pwd, url):
+                    sys.exit("未找到登录输入框,页面结构可能变了")
+                h, r = harvest(page, user, pwd, url, tables, goto_page=False)
+            else:
+                # 后续页面沿用同一浏览器会话,通常无需再登录:
+                # harvest(goto_page=True) 内部会尝试登录并容忍"没有登录框"的情况。
+                print(f"\n=== 转抓下一个页面(第 {idx + 1} 个) ===")
+                h, r = harvest(page, user, pwd, url, tables, goto_page=True)
+            raw_header.update(h)
+            raw_rows.update(r)
 
         page.wait_for_timeout(2000)
         browser.close()
@@ -331,10 +342,10 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ok = []
     # 只写本次模式负责的表:main 不碰 daily.json,daily 只写 daily.json,
-    # 这样两条定时任务各写各的文件,不会互相覆盖成空。
-    for name in tables:
-        header = raw_header[name]
-        data_rows = list(raw_rows[name].values())
+    # 这样即使某次只跑一种模式,也不会把另一种模式的文件覆盖成空。
+    for name in want:
+        header = raw_header.get(name)
+        data_rows = list(raw_rows.get(name, {}).values())
         out = OUT_DIR / f"{FILE_KEYS[name]}.json"
         if not header or not data_rows:
             # 抓到 0 行只警告、不落盘:保留上一份好数据,避免一次抖动把看板打成空白

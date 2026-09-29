@@ -4,13 +4,34 @@ on:
   push:
     branches: [main] # push 到 main 即自动部署(改 site/ 不用再手动 Run)
   schedule:
-    - cron: '7,17,27,37,47,57 * * * *' # 每10分钟一次,错开整点高峰,降低被 GitHub 调度器丢班次的概率
-  workflow_dispatch: {} # 支持手动触发,兜底用
+    # 每 10 分钟一次,错开整点高峰,降低被 GitHub 调度器丢班次的概率
+    - cron: '7,17,27,37,47,57 * * * *'
+    # 每天一次:只抓「门店每日数据」。cron 用 UTC —— 北京时间 02:00 = UTC 前一天 18:00。
+    # 单独一条 cron 而不是独立 workflow:两条 workflow 共用并发组时,排队中的那条会被
+    # 后来的挤掉(cancelled),凌晨这次很容易跑不起来;合并成一条就只有一种队列,不会被取消。
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 抓取模式
+        required: true
+        default: both
+        type: choice
+        options: [both, main, daily]
 
 permissions:
   contents: write
   pages: write
   id-token: write
+
+env:
+  # 本次跑哪种模式(放在 workflow 级,Commit 步骤的提交信息也要用到):
+  #   daily → 命中 '0 18 * * *'(北京 02:00),只抓「门店每日数据」1 张表
+  #   main  → 其余每 10 分钟的班次,只抓主页面 6 张表,不碰 daily.json
+  #   手动触发 → 用下拉框选的 mode(默认 both)
+  # 「门店每日数据」是全表最大(235 行,约占 7 表总量 62%),而曲线只需要它的历史点
+  # (今日点已改由门店表「今日业绩」列实时提供,随 10 分钟一刷更新),所以把它降频到每天一次。
+  FETCH_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode || (github.event.schedule == '0 18 * * *' && 'daily' || 'main') }}
 
 concurrency:
   group: pages
@@ -45,19 +66,14 @@ jobs:
         env:
           BI_USER: ${{ secrets.BI_USER }}
           BI_PASS: ${{ secrets.BI_PASS }}
-          # 主流程只抓 6 张表(门店/咨询/医生/网电/市场/老带新),不碰 daily.json。
-          # 「门店每日数据」由 fetch-daily.yml 每天凌晨 2 点单独抓一次。
-          FETCH_MODE: main
         run: python scripts/fetch_data.py
 
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # 只提交本流程负责的 6 个文件,daily.json 归 fetch-daily.yml,避免互相回退
-          git add site/data/stores.json site/data/consults.json site/data/doctors.json \
-                  site/data/web.json site/data/market.json site/data/referral.json
-          git diff --cached --quiet || git commit -m "data: update $(date -u +%F)"
+          git add site/data/*.json
+          git diff --cached --quiet || git commit -m "data: $FETCH_MODE update $(date -u +%F' '%H:%M)"
           # 两次运行可能前后脚完成:先 rebase 远端最新提交再推。
           # -X theirs = 冲突时采用本次运行的数据(rebase 中 theirs 指本运行的新提交):
           # 两次运行都整文件重写 JSON(含 updated_at),必然内容冲突,自动合并解不掉,
