@@ -300,9 +300,11 @@
         align-items: baseline;
         gap: 6px;
         line-height: 46px;
+        height: 46px; /* 定高：baseline 对齐的字形包络可达 54px，会把底部小字顶出卡片 */
       }
       .kpi-val .num {
         font: 700 var(--t2) var(--num-font);
+        line-height: 46px; /* font 简写会把 line-height 重置为 normal(44px字号≈57px行高)，曾致卡内文字溢出边框 */
         color: var(--gold-num);
         text-shadow: 0 0 12px rgba(245, 180, 80, 0.32);
         white-space: nowrap;
