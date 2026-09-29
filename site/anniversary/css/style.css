@@ -482,11 +482,13 @@
         padding: var(--sp-2) 0;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        /* gap 2 + 行高 30：7 行正好填满容器(254px)，与左栏 32px 行视觉规格一致。
+           曾经是 28px 行 + gap 4（没填满），且比左栏小一圈，看板上左右不对称。 */
+        gap: 2px;
       }
       .rk-row {
         flex: none;
-        height: 28px;
+        height: 30px;
         display: grid;
         grid-template-columns: 22px 1fr 72px 56px;
         align-items: center;
