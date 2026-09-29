@@ -363,12 +363,12 @@
             ? `<div><span class="col">平均单体</span><b>${fmtI(s.avgTicket)}</b> 元</div>`
             : `<div><span class="col">平均单体</span><b>—</b></div>`;
         return `<div class="hd"><span class="dot" style="background:${s.color}"></span>${s.name}</div>
-          <div><span class="col">实收</span><b>${actual.toFixed(1)}</b> 万
-            <span class="col">/ 基础 ${s.targetBase} 万</span></div>
+          <div><span class="col">实收</span><b>${actual.toFixed(2)}</b> 万
+            <span class="col">/ 基础 ${s.targetBase.toFixed(2)} 万</span></div>
           <div><span class="col">冲刺目标</span><b>${sprint.toFixed(0)}</b> 万
-            <span class="col">· 完成</span><b>${s.revPct.toFixed(1)}%</b></div>
+            <span class="col">· 完成</span><b>${s.revPct.toFixed(2)}%</b></div>
           <div><span class="col">累计初诊</span><b>${fmtI(initActualOf(s))}</b> 人
-            <span class="col">· 初诊完成率</span><b>${s.initPct.toFixed(1)}%</b></div>
+            <span class="col">· 初诊完成率</span><b>${s.initPct.toFixed(2)}%</b></div>
           ${avgRow}`;
       }
       SEGMENTS.slice(0, STORES.length).forEach((seg, i) => {
