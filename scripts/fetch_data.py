@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
-"""宏脉BI 报表取数:无头浏览器登录 → 提取三张表 → 写 JSON。
+"""宏脉BI 报表取数:无头浏览器登录 → 提取表格 → 写 JSON。
 
+2026-09-29 起拆两个页面:
+  - 主报表页(VIEWER_URL):门店/咨询/医生/网电/市场/老带新 共 6 张表
+  - 每日业绩页(DAILY_URL):门店每日数据 1 张表(以后可独立降频)
 凭据走环境变量 BI_USER / BI_PASS,绝不写进代码。
 本地调试可设 CHROME_PATH 指向已装的 Chrome;Actions 里用 playwright 自装的 chromium。
 """
@@ -13,11 +16,19 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 BASE = "https://bi.hmccloud.com"
+# 主报表页(6 张表;2026-09-29 起「门店每日数据」拆到独立页面,见 DAILY_URL)
 VIEWER_URL = (
     BASE + "/bi/viewer?proc=1&action=viewer&hback=true"
     "&db=__MY_DB__!2f!2026!5468!!5e74!!5e86!!2f!!6570!!636e!!96c6!!8868!!683c!.db"
 )
-TABLE_NAMES = ["门店数据", "咨询数据", "医生数据", "网电数据", "市场数据", "老带新数据", "门店每日数据"]
+# 每日业绩独立页面(拆分后单独抓,便于以后降频)
+DAILY_URL = (
+    BASE + "/bi/viewer?proc=1&action=viewer&hback=true"
+    "&db=__MY_DB__!2f!2026!5468!!5e74!!5e86!!2f!!6bcf!!65e5!!4e1a!!7ee9!.db"
+)
+TABLE_NAMES = ["门店数据", "咨询数据", "医生数据", "网电数据", "市场数据", "老带新数据"]
+DAILY_TABLE = "门店每日数据"
+ALL_TABLES = TABLE_NAMES + [DAILY_TABLE]
 FILE_KEYS = {
     "门店数据": "stores",
     "咨询数据": "consults",
@@ -126,9 +137,10 @@ def get_credentials():
     return user, pwd
 
 
-def login(page, user, pwd):
-    """打开报表页并登录。页面偶发自行导航(会话超时等)导致执行上下文销毁时,用它恢复。"""
-    page.goto(VIEWER_URL, wait_until="domcontentloaded", timeout=60000)
+def login(page, user, pwd, url=VIEWER_URL):
+    """打开报表页并登录。页面偶发自行导航(会话超时等)导致执行上下文销毁时,用它恢复。
+    会话已有效时页面没有登录输入框,返回 False —— 调用方按需决定是否视为错误。"""
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(3000)
     inputs = page.locator("input")
     user_input = pass_input = None
@@ -188,6 +200,95 @@ def build_payload(name, rows):
     }
 
 
+def harvest(page, user, pwd, url, tables, goto_page=True):
+    """在 url 页面上自适应滚动抓取 tables 全部行(签名去重累计)。
+    返回 (raw_header, raw_rows);会话过期恢复登录也用同一 url。
+    goto_page=False 表示页面已在该 url 上(主流程首次登录后)。"""
+    raw_rows = {name: {} for name in tables}     # name -> {签名: 行}
+    raw_header = {name: None for name in tables}
+    stable = {name: 0 for name in tables}        # 连续几轮无新增
+    at_bottom = {name: False for name in tables}  # 该表是否已滚到底(自适应退出用)
+    pending = list(tables)
+    eval_fail_streak = 0  # 连续抽取失败次数(页面导航/会话过期会导致执行上下文销毁)
+
+    if goto_page:
+        # 会话有效时页面没有登录框,login 返回 False 属正常,继续抓取即可
+        try:
+            login(page, user, pwd, url)
+        except Exception as e:
+            print("静默登录跳过:", e)
+
+    # 轮询抽取 + 渐进滚动:
+    #  - 标题/网格/数据可能延迟渲染(Exploded 型约 20s+),需等待
+    #  - 表格可能只渲染可视区(虚拟滚动),需逐步滚动滚动容器,跨轮累计去重才能拿到全部行
+    # 累计策略:同一行用"各单元格拼接"作签名去重,这样无论分几轮、滚到哪,全集都能凑齐且不重复
+    # 自适应滚动:每张表滚到自己的底部(atBottom)且连续2轮无新增才判定抓全。
+    # 上限 150 轮仅作兜底(约覆盖 600 行,远大于 45天×5店=225 行),正常会在各表到底后自动退出。
+    for i in range(150):
+        if not pending:
+            break
+        # 模拟真实滚轮:鼠标移到每张待抽取表的网格上,每轮向下滚 240px(约 8~9 行)。
+        # 步长 240px 仍保证相邻采样窗口大量重叠(视口约 28 行,重叠约 19 行),
+        # 确保中间每一行都至少落入一个窗口被抓到,不会像大步跳那样漏掉缝隙里的行。
+        # 注意:每轮对所有待抓表都照常滚动(沿用已验证有效的机制);at_bottom 只参与"是否抓全"判定,
+        # 不用来跳过滚动 —— 否则一旦帆软滚动容器被误判为"已到底",会提前退出而漏抓行。
+        try:
+            boxes = page.evaluate(GRID_BOX_JS, pending)
+        except Exception as e:
+            boxes = {}
+            print("定位跳过:", e)
+        for t in pending:
+            b = boxes.get(t)
+            if not b:
+                continue
+            at_bottom[t] = bool(b.get("atBottom"))
+            # 只有表格内部真有滚动条时才滚轮:无滚动条的全渲染表直接抓,既省数十轮等待,
+            # 也避免对无滚动条表调 mouse.wheel 反而把整个浏览器页面往下卷,导致后续表定位偏移/漏抓。
+            if b.get("hasScroll"):
+                try:
+                    page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
+                    page.mouse.wheel(0, 240)
+                except Exception as e:
+                    print("滚轮跳过:", e)
+        page.wait_for_timeout(1500)
+        # 抓取也容错:页面偶发自行导航(会话超时等)会销毁执行上下文,这里不能让单次失败炸掉整个进程。
+        # 已抓到的行有签名去重累计着,跳一轮不丢数据;连续失败则重新登录恢复会话。
+        try:
+            res = page.evaluate(SCROLL_EXTRACT_JS, pending)
+            eval_fail_streak = 0
+        except Exception as e:
+            eval_fail_streak += 1
+            print("抽取跳过:", e)
+            if eval_fail_streak >= 3:
+                print("连续抽取失败,尝试重新登录恢复会话")
+                try:
+                    if login(page, user, pwd, url):
+                        eval_fail_streak = 0
+                    else:
+                        print("重新登录未找到输入框,下轮继续重试")
+                except Exception as e2:
+                    print("重新登录失败:", e2)
+            continue
+        for name, rows in res.items():
+            if isinstance(rows, list) and len(rows) >= 2:
+                raw_header[name] = rows[0]
+                added = 0
+                for r in rows[1:]:
+                    sig = "\u0001".join("" if v is None else str(v) for v in r)
+                    if sig not in raw_rows[name]:
+                        raw_rows[name][sig] = r
+                        added += 1
+                stable[name] = stable[name] + 1 if added == 0 else 0
+        # 判定抓全:① 已拿到表头;② 该表已滚到底;③ 连续2轮无新增。
+        # 任一未满足则继续(尤其大表没到底前,即使某轮无新增也不提前退出,防止漏抓前面行)。
+        pending = [
+            t for t in tables
+            if raw_header.get(t) is None or not (at_bottom.get(t, False) and stable.get(t, 0) >= 2)
+        ]
+        print(f"round {i + 1}: 各表行数={ {n: len(raw_rows[n]) for n in tables} } 到底={ {n: at_bottom[n] for n in tables} } 待抽取={pending}")
+    return raw_header, raw_rows
+
+
 def main():
     user, pwd = get_credentials()
     chrome_path = os.environ.get("CHROME_PATH") or None
@@ -198,89 +299,25 @@ def main():
         # CI 默认 1080 高只装得下约 8 行,故本地能抓全(15/25)而 CI 只抓 8/8。
         # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
         page = browser.new_page(viewport={"width": 1920, "height": 4000})
-        if not login(page, user, pwd):
+        if not login(page, user, pwd, VIEWER_URL):
             sys.exit("未找到登录输入框,页面结构可能变了")
 
-        # 轮询抽取 + 渐进滚动:
-        #  - 标题/网格/数据可能延迟渲染(Exploded 型约 20s+),需等待
-        #  - 表格可能只渲染可视区(虚拟滚动),需逐步滚动滚动容器,跨轮累计去重才能拿到全部行
-        # 累计策略:同一行用"各单元格拼接"作签名去重,这样无论分几轮、滚到哪,全集都能凑齐且不重复
-        raw_rows = {name: {} for name in TABLE_NAMES}     # name -> {签名: 行}
-        raw_header = {name: None for name in TABLE_NAMES}
-        stable = {name: 0 for name in TABLE_NAMES}        # 连续几轮无新增
-        at_bottom = {name: False for name in TABLE_NAMES}  # 该表是否已滚到底(自适应退出用)
-        pending = list(TABLE_NAMES)
-        eval_fail_streak = 0  # 连续抽取失败次数(页面导航/会话过期会导致执行上下文销毁)
-        # 自适应滚动:不再靠固定轮数,而是每张表滚到自己的底部(atBottom)且连续2轮无新增才判定抓全。
-        # 上限 150 轮仅作兜底(约覆盖 600 行,远大于 45天×5店=225 行),正常会在各表到底后自动退出。
-        for i in range(150):
-            if not pending:
-                break
-            # 模拟真实滚轮:鼠标移到每张待抽取表的网格上,每轮向下滚 240px(约 8~9 行)。
-            # 步长 240px 仍保证相邻采样窗口大量重叠(视口约 28 行,重叠约 19 行),
-            # 确保中间每一行都至少落入一个窗口被抓到,不会像大步跳那样漏掉缝隙里的行。
-            # 注意:每轮对所有待抓表都照常滚动(沿用已验证有效的机制);at_bottom 只参与"是否抓全"判定,
-            # 不用来跳过滚动 —— 否则一旦帆软滚动容器被误判为"已到底",会提前退出而漏抓行。
-            try:
-                boxes = page.evaluate(GRID_BOX_JS, pending)
-            except Exception as e:
-                boxes = {}
-                print("定位跳过:", e)
-            for t in pending:
-                b = boxes.get(t)
-                if not b:
-                    continue
-                at_bottom[t] = bool(b.get("atBottom"))
-                # 只有表格内部真有滚动条时才滚轮:无滚动条的全渲染表直接抓,既省数十轮等待,
-                # 也避免对无滚动条表调 mouse.wheel 反而把整个浏览器页面往下卷,导致后续表定位偏移/漏抓。
-                if b.get("hasScroll"):
-                    try:
-                        page.mouse.move(min(b["x"], 1910), min(b["y"], 3980))
-                        page.mouse.wheel(0, 240)
-                    except Exception as e:
-                        print("滚轮跳过:", e)
-            page.wait_for_timeout(1500)
-            # 抓取也容错:页面偶发自行导航(会话超时等)会销毁执行上下文,这里不能让单次失败炸掉整个进程。
-            # 已抓到的行有签名去重累计着,跳一轮不丢数据;连续失败则重新登录恢复会话。
-            try:
-                res = page.evaluate(SCROLL_EXTRACT_JS, pending)
-                eval_fail_streak = 0
-            except Exception as e:
-                eval_fail_streak += 1
-                print("抽取跳过:", e)
-                if eval_fail_streak >= 3:
-                    print("连续抽取失败,尝试重新登录恢复会话")
-                    try:
-                        if login(page, user, pwd):
-                            eval_fail_streak = 0
-                        else:
-                            print("重新登录未找到输入框,下轮继续重试")
-                    except Exception as e2:
-                        print("重新登录失败:", e2)
-                continue
-            for name, rows in res.items():
-                if isinstance(rows, list) and len(rows) >= 2:
-                    raw_header[name] = rows[0]
-                    added = 0
-                    for r in rows[1:]:
-                        sig = "\u0001".join("" if v is None else str(v) for v in r)
-                        if sig not in raw_rows[name]:
-                            raw_rows[name][sig] = r
-                            added += 1
-                    stable[name] = stable[name] + 1 if added == 0 else 0
-            # 判定抓全:① 已拿到表头;② 该表已滚到底;③ 连续2轮无新增。
-            # 任一未满足则继续(尤其大表没到底前,即使某轮无新增也不提前退出,防止漏抓前面行)。
-            pending = [
-                t for t in TABLE_NAMES
-                if raw_header.get(t) is None or not (at_bottom.get(t, False) and stable.get(t, 0) >= 2)
-            ]
-            print(f"round {i + 1}: 各表行数={ {n: len(raw_rows[n]) for n in TABLE_NAMES} } 到底={ {n: at_bottom[n] for n in TABLE_NAMES} } 待抽取={pending}")
+        # ① 主报表页:6 张表(咨询/医生已并排挪到页面底部,脚本按标题定位,与位置无关)
+        h_main, r_main = harvest(page, user, pwd, VIEWER_URL, TABLE_NAMES, goto_page=False)
+
+        # ② 每日业绩独立页面:1 张表(会话沿用,通常无需再登录)
+        print("\n=== 主页面完成,转抓每日业绩页面 ===")
+        h_daily, r_daily = harvest(page, user, pwd, DAILY_URL, [DAILY_TABLE], goto_page=True)
+
         page.wait_for_timeout(2000)
         browser.close()
 
+    raw_header = {**h_main, **h_daily}
+    raw_rows = {**r_main, **r_daily}
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ok = []
-    for name in TABLE_NAMES:
+    for name in ALL_TABLES:
         header = raw_header[name]
         data_rows = list(raw_rows[name].values())
         rows_arg = [header] + data_rows if header else None
@@ -291,7 +328,7 @@ def main():
         ok.append(f"{name}: {len(data_rows)} 行 -> {out.name}")
     print("\n".join(ok))
     # 不因某张表为空而整体失败:仅打印警告,保证其它表正常发布
-    for n in TABLE_NAMES:
+    for n in ALL_TABLES:
         p = json.load(open(OUT_DIR / f"{FILE_KEYS[n]}.json", encoding="utf-8"))
         if not p["rows"]:
             print(f"警告: {n} 提取为空,请检查页面结构或标题是否一致")
