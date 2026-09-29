@@ -76,6 +76,13 @@
     );
 
     /* ── 门店：目标/实收/完成率/初诊 全部来自 stores.json（单位元 → 万） ── */
+    /* 「今日业绩」列：门店表新增的实时列(10 分钟一刷)。BI 里同时有"今日初诊",
+       这里必须认准"业绩/实收/金额"关键字,否则会把初诊人数当成金额。
+       找不到该列时 todayKey=null → 曲线今日点回退用 daily 当日值。 */
+    const cols = storesRaw.columns || [];
+    const todayKey =
+      cols.find((c) => /今日/.test(String(c)) && /业绩|实收|金额/.test(String(c))) ||
+      cols.find((c) => /今日/.test(String(c)) && !/到诊|初诊/.test(String(c)));
     const byName = {};
     storesRaw.rows.forEach((r) => (byName[r["门店"]] = r));
     const names = CONFIG.order.filter((n) => byName[n]);
@@ -96,6 +103,10 @@
         initActual: num(r["初诊到诊"]), // 人
         initPct: num(r["初诊完成率"]), // %
         avgTicket: num(r["平均单体"]), // 平均单体（元，BI 原生列）
+        /* 今日业绩（万）：门店表的实时列，10 分钟一刷。
+           daily.json 每天只在凌晨抓一次，今日那格会是 0/陈旧值，
+           所以曲线最后一个点用这里覆盖，历史点仍来自 daily。 */
+        todayRev: todayKey ? num(r[todayKey]) / 1e4 : null,
         revisit: ex.revisit != null ? ex.revisit : 0, // 复诊到店率%（BI 无，手填）
       };
     });
@@ -107,6 +118,7 @@
       stores.push({
         ...s,
         avgTicket: null,
+        todayRev: null, // BI 无此店 → 今日点仍走 daily
         actual: (s.targetBase * s.revPct) / 100,
         initActual: (s.initBase * s.initPct) / 100,
       });
@@ -173,6 +185,10 @@
       const m = per[s.name] || {};
       const arr = [];
       for (let d = 1; d <= T; d++) arr.push(m[d] || 0);
+      /* 今日点（下标 T-1）用门店表实时「今日业绩」覆盖：
+         daily.json 已改为每天凌晨抓一次，白天它的今日格不刷新。
+         找不到该列时 s.todayRev 为 null → 保持 daily 原值，不写 0。 */
+      if (s.todayRev != null) arr[T - 1] = s.todayRev;
       byId[s.id] = arr;
       for (let i = 0; i < T; i++) all[i] += arr[i];
     });

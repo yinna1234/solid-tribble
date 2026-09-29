@@ -45,13 +45,18 @@ jobs:
         env:
           BI_USER: ${{ secrets.BI_USER }}
           BI_PASS: ${{ secrets.BI_PASS }}
+          # 主流程只抓 6 张表(门店/咨询/医生/网电/市场/老带新),不碰 daily.json。
+          # 「门店每日数据」由 fetch-daily.yml 每天凌晨 2 点单独抓一次。
+          FETCH_MODE: main
         run: python scripts/fetch_data.py
 
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add site/data/*.json
+          # 只提交本流程负责的 6 个文件,daily.json 归 fetch-daily.yml,避免互相回退
+          git add site/data/stores.json site/data/consults.json site/data/doctors.json \
+                  site/data/web.json site/data/market.json site/data/referral.json
           git diff --cached --quiet || git commit -m "data: update $(date -u +%F)"
           # 两次运行可能前后脚完成:先 rebase 远端最新提交再推。
           # -X theirs = 冲突时采用本次运行的数据(rebase 中 theirs 指本运行的新提交):

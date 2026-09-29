@@ -3,7 +3,15 @@
 
 2026-09-29 起拆两个页面:
   - 主报表页(VIEWER_URL):门店/咨询/医生/网电/市场/老带新 共 6 张表
-  - 每日业绩页(DAILY_URL):门店每日数据 1 张表(以后可独立降频)
+  - 每日业绩页(DAILY_URL):门店每日数据 1 张表
+
+运行模式(环境变量 FETCH_MODE):
+  - main(默认):只抓主页面 6 张表,不碰 daily.json。给每 10 分钟的定时任务用。
+  - daily:     只抓每日业绩页 1 张表,只写 daily.json。给每天一次的定时任务用。
+  分开跑的原因:每日业绩是全表最大(235 行,占 7 表总量约 62%),而曲线只需要它的
+  历史点(今日点已改由门店表「今日业绩」列实时提供),所以把它降频到每天一次,
+  主流程每 10 分钟只跑 6 张小表,单次 CI 能省掉一大半时间。
+
 凭据走环境变量 BI_USER / BI_PASS,绝不写进代码。
 本地调试可设 CHROME_PATH 指向已装的 Chrome;Actions 里用 playwright 自装的 chromium。
 """
@@ -292,6 +300,15 @@ def harvest(page, user, pwd, url, tables, goto_page=True):
 def main():
     user, pwd = get_credentials()
     chrome_path = os.environ.get("CHROME_PATH") or None
+    # FETCH_MODE=main(默认,每10分钟) | daily(每天凌晨一次)
+    mode = (os.environ.get("FETCH_MODE") or "main").strip().lower()
+    if mode == "daily":
+        target_url, tables = DAILY_URL, [DAILY_TABLE]
+    else:
+        if mode != "main":
+            print(f"未知 FETCH_MODE={mode!r},按 main 处理")
+        target_url, tables = VIEWER_URL, list(TABLE_NAMES)
+    print(f"=== FETCH_MODE={mode} 目标页面={target_url} 待抓表={tables} ===")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, executable_path=chrome_path)
@@ -299,39 +316,35 @@ def main():
         # CI 默认 1080 高只装得下约 8 行,故本地能抓全(15/25)而 CI 只抓 8/8。
         # 拉到 4000 让所有表所有行一次性进 DOM,首轮即可抓全,无需滚动。
         page = browser.new_page(viewport={"width": 1920, "height": 4000})
-        if not login(page, user, pwd, VIEWER_URL):
+        # daily 模式直接登录每日业绩页(它是独立 viewer,登录后会回跳该页)。
+        # 找不到输入框 = 页面结构变了,继续跑只会抓到 0 行并把线上好数据覆盖成空,故直接退出。
+        if not login(page, user, pwd, target_url):
             sys.exit("未找到登录输入框,页面结构可能变了")
 
-        # ① 主报表页:6 张表(咨询/医生已并排挪到页面底部,脚本按标题定位,与位置无关)
-        h_main, r_main = harvest(page, user, pwd, VIEWER_URL, TABLE_NAMES, goto_page=False)
-
-        # ② 每日业绩独立页面:1 张表(会话沿用,通常无需再登录)
-        print("\n=== 主页面完成,转抓每日业绩页面 ===")
-        h_daily, r_daily = harvest(page, user, pwd, DAILY_URL, [DAILY_TABLE], goto_page=True)
+        # 主页面 6 张表(咨询/医生已并排挪到页面底部,脚本按标题定位,与位置无关)
+        # daily 模式则只抓「门店每日数据」1 张表
+        raw_header, raw_rows = harvest(page, user, pwd, target_url, tables, goto_page=False)
 
         page.wait_for_timeout(2000)
         browser.close()
 
-    raw_header = {**h_main, **h_daily}
-    raw_rows = {**r_main, **r_daily}
-
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ok = []
-    for name in ALL_TABLES:
+    # 只写本次模式负责的表:main 不碰 daily.json,daily 只写 daily.json,
+    # 这样两条定时任务各写各的文件,不会互相覆盖成空。
+    for name in tables:
         header = raw_header[name]
         data_rows = list(raw_rows[name].values())
-        rows_arg = [header] + data_rows if header else None
-        payload = build_payload(name, rows_arg)
         out = OUT_DIR / f"{FILE_KEYS[name]}.json"
+        if not header or not data_rows:
+            # 抓到 0 行只警告、不落盘:保留上一份好数据,避免一次抖动把看板打成空白
+            print(f"警告: {name} 提取为空(0 行),保留原有 {out.name},未覆盖")
+            continue
+        payload = build_payload(name, [header] + data_rows)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         ok.append(f"{name}: {len(data_rows)} 行 -> {out.name}")
     print("\n".join(ok))
-    # 不因某张表为空而整体失败:仅打印警告,保证其它表正常发布
-    for n in ALL_TABLES:
-        p = json.load(open(OUT_DIR / f"{FILE_KEYS[n]}.json", encoding="utf-8"))
-        if not p["rows"]:
-            print(f"警告: {n} 提取为空,请检查页面结构或标题是否一致")
 
 
 if __name__ == "__main__":
