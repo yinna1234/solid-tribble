@@ -10,14 +10,7 @@ on:
     # 单独一条 cron 而不是独立 workflow:两条 workflow 共用并发组时,排队中的那条会被
     # 后来的挤掉(cancelled),凌晨这次很容易跑不起来;合并成一条就只有一种队列,不会被取消。
     - cron: '0 18 * * *'
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 抓取模式
-        required: true
-        default: both
-        type: choice
-        options: [both, main, daily]
+  workflow_dispatch: {} # 手动补跑兜底(模式按运行时的 UTC 小时自动判定)
 
 permissions:
   contents: write
@@ -25,13 +18,9 @@ permissions:
   id-token: write
 
 env:
-  # 本次跑哪种模式(放在 workflow 级,Commit 步骤的提交信息也要用到):
-  #   daily → 命中 '0 18 * * *'(北京 02:00),只抓「门店每日数据」1 张表
-  #   main  → 其余每 10 分钟的班次,只抓主页面 6 张表,不碰 daily.json
-  #   手动触发 → 用下拉框选的 mode(默认 both)
-  # 「门店每日数据」是全表最大(235 行,约占 7 表总量 62%),而曲线只需要它的历史点
-  # (今日点已改由门店表「今日业绩」列实时提供,随 10 分钟一刷更新),所以把它降频到每天一次。
-  FETCH_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode || (github.event.schedule == '0 18 * * *' && 'daily' || 'main') }}
+  # 应急开关:平时留空。需要在仓库 Settings → Secrets and variables → Actions → Variables
+  # 临时加一个 FETCH_MODE_OVERRIDE=main|daily|both,就能强制下一次运行抓什么,不用改代码。
+  MODE_OVERRIDE: ${{ vars.FETCH_MODE_OVERRIDE }}
 
 concurrency:
   group: pages
@@ -66,7 +55,27 @@ jobs:
         env:
           BI_USER: ${{ secrets.BI_USER }}
           BI_PASS: ${{ secrets.BI_PASS }}
-        run: python scripts/fetch_data.py
+        run: |
+          # ── 判定本次抓什么 ──
+          # 不用 github.event_name / github.event.schedule 判断:实测本仓库的定时(cron)运行
+          # 被 GitHub 报成 workflow_dispatch,inputs 还会被填上默认值,导致每次都跑成 both,
+          # 降频完全失效。改成看 runner 的 UTC 小时,简单且确定。
+          #   UTC 18 点(北京 02:00)→ daily:只抓「门店每日数据」1 张表
+          #   其它小时          → main :只抓主页面 6 张表,不碰 daily.json
+          H=$(date -u +%H)
+          if [ -n "$MODE_OVERRIDE" ]; then
+            FETCH_MODE="$MODE_OVERRIDE"
+          elif [ "$H" = "18" ]; then
+            FETCH_MODE=daily
+          else
+            FETCH_MODE=main
+          fi
+          export FETCH_MODE
+          echo "UTC 小时=$H → FETCH_MODE=$FETCH_MODE"
+          echo "FETCH_MODE=$FETCH_MODE" >> "$GITHUB_ENV"
+          # 「门店每日数据」是全表最大(235 行,约占 7 表总量 62%),而曲线只需要它的历史点
+          # (今日点已改由门店表「今日业绩」列实时提供,随 10 分钟一刷更新),所以降到每天一次。
+          python scripts/fetch_data.py
 
       - name: Commit data
         run: |
