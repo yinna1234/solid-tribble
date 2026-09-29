@@ -95,15 +95,18 @@
         initBase: num(r["初诊目标"]), // 人
         initActual: num(r["初诊到诊"]), // 人
         initPct: num(r["初诊完成率"]), // %
+        avgTicket: num(r["平均单体"]), // 平均单体（元，BI 原生列）
         revisit: ex.revisit != null ? ex.revisit : 0, // 复诊到店率%（BI 无，手填）
       };
     });
     /* BI 之外的弧段（占位值）：BI 门店表里还没出现时才启用；
-       将来 BI 正式纳入该门店 → 上面的 stores 已按真实数据建好，这里直接跳过 */
+       将来 BI 正式纳入该门店 → 上面的 stores 已按真实数据建好，这里直接跳过。
+       占位门店 BI 没有"平均单体"，tooltip 里显示 — */
     CONFIG.extraStores.forEach((s) => {
       if (byName[s.name]) return;
       stores.push({
         ...s,
+        avgTicket: null,
         actual: (s.targetBase * s.revPct) / 100,
         initActual: (s.initBase * s.initPct) / 100,
       });
